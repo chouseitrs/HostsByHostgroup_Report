@@ -1,0 +1,95 @@
+#!/usr/bin/python3
+
+
+import csv
+import http.client
+import json
+from urllib.parse import urlencode, quote_plus
+from getpass import getpass
+import base64
+import ssl
+import argparse
+import os
+
+
+
+# Create the command line argument parser
+parser = argparse.ArgumentParser(description="OP5 API Query to CSV")
+
+# Add the groups for the required and optional command line arguments. Also hide the default grouping
+parser._action_groups.pop()
+required = parser.add_argument_group('Required Arguments')
+optional = parser.add_argument_group('Modifier Arguments')
+
+# Add the command line arguments that are required.
+required.add_argument("-u", "--username", help="OP5 API username", type=str, required=True)
+
+# Add the command line arguments that are optional.
+optional.add_argument("-s", "--server", help="OP5 Server DNS Name or IP. Defaults to localhost", default="localhost", type=str)
+optional.add_argument("-i", "--insecure", help="Allow invalid and self signed SSL Certificates. This argument has no options", action='store_true')
+optional.add_argument("-m", "--maxno", help="Max number per request", default=50, type=int)
+# Parse the arguments into variables.
+args = parser.parse_args()
+maxCount = args.maxno
+# Determine if we are going to connect accepting any SSL certificate or require validation.
+if args.insecure:
+    conn = http.client.HTTPSConnection(
+        args.server,
+        context=ssl._create_unverified_context()
+    )
+else:
+    conn = http.client.HTTPSConnection(
+        args.server
+    )
+
+
+## Get json of hostgroups where num_hosts > 0
+# Add the required fields to be parsed into the URL for the GET request.
+to_encode = {
+    'format': 'json',
+    'query': '[hostgroups] num_hosts > 0',
+    'columns':'name,members',
+    'limit':maxCount
+}
+
+# Get the password input from user
+#apipw=getpass("OP5 API Password:")
+apipw='monitor'
+# Create the headers to allow authentication and return encoding.
+headers = {
+    'accept': "application/json",
+    'Authorization': 'Basic {auth_string}'.format(auth_string=base64.b64encode(str.encode('{username}:{password}'.format(username=args.username, password=apipw))).decode('utf=8'))
+}
+
+#GET to determine number of hostgroups
+conn.request("GET", "/api/filter/count?{query}".format(query=urlencode(to_encode, quote_via=quote_plus)), None, headers)
+CTres = conn.getresponse()
+hgct_json_result = json.loads(CTres.read())
+countHostGroups = hgct_json_result['count']
+hg_offset=0
+loop_ctr = 0
+hgiter=0
+hg_json_results = []
+while (loop_ctr * maxCount) < (countHostGroups / maxCount):
+    loop_ctr+=1
+    while hgiter < min((countHostGroups - (maxCount * loop_ctr)), maxCount):
+        if hg_offset>0: to_encode['offset'] = hg_offset
+        # perform the GET request for the results.
+        conn.request("GET", "/api/filter/query?{query}".format(query=urlencode(to_encode, quote_via=quote_plus)), None, headers)
+        # Process the response of the GET request.
+        res = conn.getresponse()
+        if res.status >= 400:
+            print('Server returned status code {status} - {reason}'.format(status=res.status, reason=res.reason))
+            exit(1)
+        # Create JSON from the results.
+        hg_json_results.extend(json.loads(res.read()))
+        hgiter += 1
+        hg_offset += 1 * maxCount
+    hgiter=0
+
+
+
+for  i in range(len(hg_json_results)):
+    print(hg_json_results[i]['name'])
+    for j in range(len(hg_json_results[i]['members'])):
+        print("  "+hg_json_results[i]['members'][j])
